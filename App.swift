@@ -70,11 +70,13 @@ final class Session: ObservableObject {
     private func launchWorker() throws {
         let process = Process()
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        process.executableURL = support.appendingPathComponent("AcademicNotes/runtime/bin/python")
+        let bundledPython = Bundle.main.url(forResource: "python3.11", withExtension: nil,
+                                            subdirectory: "runtime/bin")
+        process.executableURL = bundledPython ?? support.appendingPathComponent("AcademicNotes/runtime/bin/python")
         guard let script = Bundle.main.url(forResource: "Transcribe", withExtension: "py") else {
             throw CocoaError(.fileNoSuchFile)
         }
-        process.arguments = [script.path]
+        process.arguments = ["-B", script.path]
         var env = ProcessInfo.processInfo.environment
         let engine = Engine.selected
         env["ACADEMIC_NOTES_ENGINE"] = engine.rawValue
@@ -93,6 +95,9 @@ final class Session: ObservableObject {
             env["ACADEMIC_NOTES_API_WORKSPACE"] = defaults.string(forKey: "aliyunWorkspace." + region)
         }
         env["ACADEMIC_NOTES_TERMS"] = UserDefaults.standard.string(forKey: "terms")
+        env.removeValue(forKey: "PYTHONHOME")
+        env.removeValue(forKey: "PYTHONPATH")
+        env["PYTHONNOUSERSITE"] = "1"
         env["PYTHONUTF8"] = "1"
         process.environment = env
         let command = Pipe(), events = Pipe()
@@ -104,7 +109,8 @@ final class Session: ObservableObject {
             var failure: String?
             do {
                 for try await line in events.fileHandleForReading.bytes.lines {
-                    guard let event = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
+                    guard let event = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
+                    if let message = event["status"] as? String, phase == .starting { status = message }
                     if event["ready"] != nil, phase == .starting {
                         phase = .live
                         status = engine == .cloud ? "正在记录 · 云端" : "正在记录"

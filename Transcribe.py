@@ -65,7 +65,7 @@ def run():
     if engine == "aliyun-api":
         import CloudASR
         return CloudASR.run()
-    if engine not in MODEL_REVISIONS:
+    if engine not in (*MODEL_REVISIONS, "firered-aed", "r2t2-8bit"):
         raise ValueError("未知的转写引擎，请在设置中重新选择。")
 
     import numpy as np
@@ -86,7 +86,15 @@ def run():
             os._exit(0)
 
     threading.Thread(target=wait_for_stop, daemon=True).start()
-    decode = load_transcriber(engine)
+    streamer = None
+    if engine == "r2t2-8bit":
+        from R2T2 import load_streamer
+        streamer = load_streamer(os.environ.get("ACADEMIC_NOTES_TERMS", ""))
+    elif engine == "firered-aed":
+        from FireRedASR import load_transcriber as load_firered
+        decode = load_firered()
+    else:
+        decode = load_transcriber(engine)
     loading.clear()
     if stopped.is_set():
         return
@@ -99,6 +107,7 @@ def run():
     voiced_blocks = 0
     noise_level = 0.0
     next_preview = 14
+    streamed_blocks = 0
 
     def receive(audio, count, timing, status):
         incoming.put(audio[:, 0].copy())
@@ -106,16 +115,21 @@ def run():
             raise sd.CallbackStop
 
     def finish_utterance():
-        nonlocal quiet_blocks, voiced_blocks, next_preview
+        nonlocal quiet_blocks, voiced_blocks, next_preview, streamed_blocks
         if voiced_blocks >= 2:
             end = len(utterance) - max(0, quiet_blocks - 2)
-            text = decode(np.concatenate(utterance[:end]))
+            if streamer is not None:
+                tail = utterance[streamed_blocks:end]
+                text = streamer.finish(np.concatenate(tail) if tail else None)
+            else:
+                text = decode(np.concatenate(utterance[:end]))
             if text:
                 emit(final=text)
             else:
                 emit(partial="")
         utterance.clear()
         quiet_blocks = voiced_blocks = 0
+        streamed_blocks = 0
         next_preview = 14
 
     with sd.InputStream(
@@ -152,7 +166,15 @@ def run():
             # Each block is 100 ms. Prefer a pause; bound the window for long speech.
             if quiet_blocks >= 9 or (len(utterance) >= 120 and quiet_blocks >= 3) or len(utterance) >= 240:
                 finish_utterance()
-            elif voiced_blocks >= 2 and len(utterance) >= next_preview and incoming.empty() and not stopped.is_set():
+                continue
+            if voiced_blocks < 2 or not incoming.empty() or stopped.is_set():
+                continue
+            if streamer is not None and len(utterance) - streamed_blocks >= 4 and not quiet:
+                text = streamer.feed(np.concatenate(utterance[streamed_blocks:]))
+                streamed_blocks = len(utterance)
+                if text:
+                    emit(partial=text)
+            elif engine in MODEL_REVISIONS and len(utterance) >= next_preview:
                 text = decode(np.concatenate(utterance))
                 if text:
                     emit(partial=text)
