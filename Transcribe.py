@@ -3,18 +3,50 @@ import os
 import sys
 import threading
 from collections import deque
+from pathlib import Path
 from queue import Empty, SimpleQueue
+
+from opencc import OpenCC
+
+to_simplified = OpenCC("t2s")
 
 
 def emit(**event):
+    for key in ("partial", "final"):
+        if key in event:
+            event[key] = to_simplified.convert(event[key])
     print(json.dumps(event, ensure_ascii=False), flush=True)
+
+
+def load_transcriber():
+    import mlx.core as mx
+    from huggingface_hub import snapshot_download
+    from mlx_qwen3_asr import Session
+
+    directory = Path.home() / "Library/Application Support/AcademicNotes/models/qwen3-asr-1.7b-8bit"
+    files = ("config.json", "quantization_config.json", "weights.safetensors",
+             "tokenizer_config.json", "vocab.json", "merges.txt")
+    if not all((directory / name).is_file() for name in files):
+        snapshot_download("moona3k/mlx-qwen3-asr-1.7b-8bit", local_dir=directory,
+                          revision="22c8abe6a6772122dda5905967d7496d1d3e8dd2", allow_patterns=list(files))
+
+    mx.set_cache_limit(256 * 1024**2)
+    session = Session(model=str(directory))
+    terms = os.environ.get("ACADEMIC_NOTES_TERMS", "")
+
+    def decode(samples):
+        # A Mandarin hint helps retain Chinese phrases inside English academic speech.
+        result = session.transcribe((samples, 16_000), language="Chinese", context=terms,
+                                    max_new_tokens=min(512, 16 + len(samples) // 800))
+        return result.text.strip()
+
+    return decode
 
 
 def run():
     import numpy as np
     import sounddevice as sd
-    from faster_whisper import WhisperModel
-    from huggingface_hub.errors import LocalEntryNotFoundError
+    import webrtcvad
 
     stopped = threading.Event()
 
@@ -25,45 +57,36 @@ def run():
         stopped.set()
 
     threading.Thread(target=wait_for_stop, daemon=True).start()
-    options = dict(device="cpu", compute_type="int8", cpu_threads=4)
-    try:
-        model = WhisperModel("base", local_files_only=True, **options)
-    except LocalEntryNotFoundError:
-        model = WhisperModel("base", **options)
+    decode = load_transcriber()
     if stopped.is_set():
         return
 
     incoming = SimpleQueue()
+    vad = webrtcvad.Vad(2)
     utterance = []
     pre_roll = deque(maxlen=2)
     quiet_blocks = 0
-    next_preview = 15
-    hotwords = os.environ.get("ACADEMIC_NOTES_TERMS") or None
+    voiced_blocks = 0
+    noise_level = 0.0
+    next_preview = 14
 
     def receive(audio, count, timing, status):
         incoming.put(audio[:, 0].copy())
         if stopped.is_set():
             raise sd.CallbackStop
 
-    def decode():
-        segments, _ = model.transcribe(
-            np.concatenate(utterance), task="transcribe", beam_size=1,
-            temperature=0, condition_on_previous_text=False,
-            vad_filter=True, hotwords=hotwords,
-        )
-        return "".join(segment.text for segment in segments).strip()
-
     def finish_utterance():
-        nonlocal quiet_blocks, next_preview
-        if utterance:
-            text = decode()
+        nonlocal quiet_blocks, voiced_blocks, next_preview
+        if voiced_blocks >= 2:
+            end = len(utterance) - max(0, quiet_blocks - 2)
+            text = decode(np.concatenate(utterance[:end]))
             if text:
                 emit(final=text)
             else:
                 emit(partial="")
-            utterance.clear()
-        quiet_blocks = 0
-        next_preview = 15
+        utterance.clear()
+        quiet_blocks = voiced_blocks = 0
+        next_preview = 14
 
     with sd.InputStream(
         samplerate=16_000, blocksize=1_600, channels=1, dtype="float32",
@@ -79,7 +102,12 @@ def run():
                 continue
             if block is None:
                 break
-            quiet = np.sqrt(np.mean(block * block)) < 0.002
+            pcm = (np.clip(block, -1, 1) * 32767).astype("<i2")
+            speech_frames = sum(vad.is_speech(frame.tobytes(), 16_000) for frame in pcm.reshape(-1, 320))
+            level = np.sqrt(np.mean(block * block))
+            if speech_frames < 2:
+                noise_level = 0.85 * noise_level + 0.15 * level
+            quiet = speech_frames < 2 or level < max(0.0005, noise_level * 1.3)
             if not utterance:
                 if quiet:
                     pre_roll.append(block)
@@ -88,12 +116,16 @@ def run():
                 pre_roll.clear()
             utterance.append(block)
             quiet_blocks = quiet_blocks + 1 if quiet else 0
+            if not quiet:
+                voiced_blocks += 1
 
             # Each block is 100 ms. Prefer a pause; bound the window for long speech.
-            if quiet_blocks >= 7 or (len(utterance) >= 80 and quiet_blocks >= 2) or len(utterance) >= 150:
+            if quiet_blocks >= 9 or (len(utterance) >= 120 and quiet_blocks >= 3) or len(utterance) >= 240:
                 finish_utterance()
-            elif len(utterance) >= next_preview and incoming.empty() and not stopped.is_set():
-                emit(partial=decode())
+            elif voiced_blocks >= 2 and len(utterance) >= next_preview and incoming.empty() and not stopped.is_set():
+                text = decode(np.concatenate(utterance))
+                if text:
+                    emit(partial=text)
                 next_preview = len(utterance) + 20
     finish_utterance()
     if not stopped.is_set():
