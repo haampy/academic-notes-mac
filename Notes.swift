@@ -111,7 +111,7 @@ enum Notes {
                     let retry = fm.fileExists(atPath: marker.path)
                     var receipt = retry ? try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: marker))
                                         : Receipt(folder: UserDefaults.standard.string(forKey: "feishuFolderToken") ?? "",
-                                                  stagingTitle: "AcademicNotes-" + UUID().uuidString)
+                                                  stagingTitle: "Purrk-" + UUID().uuidString)
                     if let link = receipt.link, receipt.stagingTitle == nil { last = link; continue }
                     let (title, text) = try contents(of: note)
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }

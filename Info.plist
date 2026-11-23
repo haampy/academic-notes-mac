@@ -2,12 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>app.academicnotes.mac</string>
-<key>CFBundleName</key><string>Academic Notes</string>
+<key>CFBundleName</key><string>Purrk</string>
+<key>CFBundleDisplayName</key><string>Purrk</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
-<key>CFBundleExecutable</key><string>AcademicNotes</string>
+<key>CFBundleExecutable</key><string>Purrk</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.1</string>
-<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>0.3.2</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSMicrophoneUsageDescription</key><string>将麦克风中的中英文讲话实时显示为字幕，并保存为笔记。</string>
 </dict></plist>

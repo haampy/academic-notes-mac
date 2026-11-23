@@ -1,4 +1,4 @@
-# Academic Notes
+# Purrk
 
 Mac 上的中英学术语音笔记。打开应用、允许麦克风访问后，悬浮窗会显示原语言字幕。点击「结束」将已定稿文字保存到本机，并在自己的飞书云盘创建一篇带时间戳的文档。音频在内存中处理。
 
@@ -19,7 +19,7 @@ Mac 上的中英学术语音笔记。打开应用、允许麦克风访问后，�
 
 ```sh
 ./build.sh
-open "build/Academic Notes.app"
+open "build/Purrk.app"
 ```
 
 构建会把 Python 运行时装在用户的 Application Support/AcademicNotes 下。本地转写通过 MLX 运行 8 位量化模型，暂停或结束后释放模型内存。

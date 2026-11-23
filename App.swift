@@ -48,7 +48,7 @@ final class Session: ObservableObject {
             let allowed = await AVCaptureDevice.requestAccess(for: .audio)
             guard phase == .starting, requestID == id else { return }
             guard allowed else {
-                ended(error: "请在系统设置 → 隐私与安全性 → 麦克风中允许 Academic Notes。")
+                ended(error: "请在系统设置 → 隐私与安全性 → 麦克风中允许 Purrk。")
                 return
             }
             do {
@@ -84,7 +84,7 @@ final class Session: ObservableObject {
             let region = defaults.string(forKey: "aliyunRegion") ?? "beijing"
             let key = try APIKeyStore.read(region)
             guard !key.isEmpty else {
-                throw NSError(domain: "AcademicNotes", code: 1, userInfo: [
+                throw NSError(domain: "Purrk", code: 1, userInfo: [
                     NSLocalizedDescriptionKey: "请在设置中保存当前地域的百炼 API Key，再继续记录。"
                 ])
             }
@@ -286,17 +286,17 @@ struct Captions: View {
 }
 
 @main
-struct AcademicNotes: App {
+struct Purrk: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var session = Session.shared
     @AppStorage("captionsPinned") private var pinned = true
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        Window("Academic Notes", id: "captions") { Captions(session: session, pinned: $pinned) }
+        Window("Purrk", id: "captions") { Captions(session: session, pinned: $pinned) }
             .defaultSize(width: 570, height: 315)
             .windowLevel(pinned ? .floating : .normal)
-        MenuBarExtra("Academic Notes", systemImage: session.phase == .live ? "mic.fill" : "mic") {
+        MenuBarExtra("Purrk", systemImage: session.phase == .live ? "mic.fill" : "mic") {
             Button("显示字幕") { openWindow(id: "captions"); NSApp.activate(ignoringOtherApps: true) }
             if session.phase != .idle { Button("结束记录") { session.stop() } }
             Button("退出") { NSApp.terminate(nil) }
