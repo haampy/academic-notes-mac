@@ -199,6 +199,13 @@ final class Session: ObservableObject {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Session.shared.terminate()
     }
@@ -206,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct Captions: View {
     @ObservedObject var session: Session
+    @Binding var pinned: Bool
     @Environment(\.openURL) private var openURL
     @FocusState private var editingTitle: Bool
     var body: some View {
@@ -221,6 +229,13 @@ struct Captions: View {
                         if !focused { session.commitTitle() }
                     }
                 Button("本地笔记") { NSWorkspace.shared.open(Notes.directory) }
+                Toggle(isOn: $pinned) {
+                    Label("字幕窗口置顶", systemImage: pinned ? "pin.fill" : "pin.slash")
+                }
+                .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .help(pinned ? "取消字幕窗口置顶" : "将字幕窗口置顶")
+                .accessibilityValue(pinned ? "已置顶" : "未置顶")
             }
             HStack {
                 Circle().fill(session.phase == .live ? Color.red : .secondary).frame(width: 8, height: 8)
@@ -274,12 +289,13 @@ struct Captions: View {
 struct AcademicNotes: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var session = Session.shared
+    @AppStorage("captionsPinned") private var pinned = true
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        Window("Academic Notes", id: "captions") { Captions(session: session) }
+        Window("Academic Notes", id: "captions") { Captions(session: session, pinned: $pinned) }
             .defaultSize(width: 570, height: 315)
-            .windowLevel(.floating)
+            .windowLevel(pinned ? .floating : .normal)
         MenuBarExtra("Academic Notes", systemImage: session.phase == .live ? "mic.fill" : "mic") {
             Button("显示字幕") { openWindow(id: "captions"); NSApp.activate(ignoringOtherApps: true) }
             if session.phase != .idle { Button("结束记录") { session.stop() } }
