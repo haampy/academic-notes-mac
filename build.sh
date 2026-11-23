@@ -19,9 +19,9 @@ fi
 bundle="$staging/image/Purrk.app"
 app="$bundle/Contents"
 mkdir -p "$app/MacOS" "$app/Resources"
-swiftc -target arm64-apple-macos15.0 -O -parse-as-library App.swift Settings.swift Notes.swift -o "$app/MacOS/Purrk"
+swiftc -target arm64-apple-macos15.0 -O -parse-as-library App.swift Captions.swift CaptionTypography.swift InputDevices.swift InputMonitor.swift MenuBarIcon.swift Settings.swift Notes.swift FlatNoteStore.swift FlatNoteMigration.swift SentenceText.swift TranscriptTail.swift TranscriptView.swift -o "$app/MacOS/Purrk"
 cp Info.plist "$app/Info.plist"
-cp AppIcon.icns Transcribe.py CloudASR.py FireRedASR.py R2T2.py LocalModels.py LICENSE "$app/Resources/"
+cp AppIcon.icns Transcribe.py AudioInput.py CloudASR.py FireRedASR.py R2T2.py LocalModels.py LICENSE "$app/Resources/"
 if [[ "${1:-}" == "--dmg" ]]; then
   bash bundle-runtime.sh "$staging" "$app/Resources/runtime"
 fi

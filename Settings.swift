@@ -1,12 +1,22 @@
 import Security
 import SwiftUI
 
-enum Engine: String {
+enum Engine: String, CaseIterable {
     case standard = "qwen-1.7b", light = "qwen-0.6b"
     case fireRed = "firered-aed", r2t2 = "r2t2-8bit", cloud = "aliyun-api"
 
     static var selected: Engine {
         Engine(rawValue: UserDefaults.standard.string(forKey: "transcriptionEngine") ?? "") ?? .standard
+    }
+
+    var label: String {
+        switch self {
+        case .standard: "本地 · Qwen3-ASR 1.7B"
+        case .light: "本地 · Qwen3-ASR 0.6B（轻量）"
+        case .fireRed: "本地 · FireRedASR2-AED（中文分句定稿）"
+        case .r2t2: "本地 · Confucius4-R2T2（中英实时字幕）"
+        case .cloud: "云端 API · 阿里云百炼"
+        }
     }
 
     var downloadSize: String? {
@@ -59,20 +69,22 @@ enum APIKeyStore {
 
 private struct CloudCredentials: View {
     let region: String
+    let typography: CaptionTypography
     @AppStorage private var workspace: String
     @State private var draft = ""
     @State private var saved = ""
     @State private var message = ""
 
-    init(region: String) {
+    init(region: String, typography: CaptionTypography) {
         self.region = region
+        self.typography = typography
         _workspace = AppStorage(wrappedValue: "", "aliyunWorkspace." + region)
     }
 
     var body: some View {
         TextField("Workspace ID", text: $workspace, prompt: Text("可选，使用百炼专属域名"))
         LabeledContent("API Key") {
-            SecureField("API Key", text: $draft, prompt: Text("输入本地域的百炼密钥"))
+            SecureField("API Key", text: $draft, prompt: Text("所选地域的百炼密钥"))
                 .labelsHidden()
                 .onSubmit { save() }
                 .onAppear {
@@ -83,7 +95,7 @@ private struct CloudCredentials: View {
                 }
             Button("保存") { save() }.disabled(draft == saved)
         }
-        if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
+        if !message.isEmpty { Text(message).font(.system(size: typography.deviceSize)).foregroundStyle(.secondary) }
     }
 
     private func save() {
@@ -99,44 +111,96 @@ private struct CloudCredentials: View {
 }
 
 struct Preferences: View {
+    @AppStorage(CaptionTypography.preferenceKey) private var fontSize = CaptionTypography.defaultSize
     @AppStorage("transcriptionEngine") private var engine = Engine.standard
     @AppStorage("aliyunRegion") private var region = "beijing"
     @AppStorage("terms") private var terms = ""
     @AppStorage("feishuFolderToken") private var folder = ""
 
-    var body: some View {
-        Form {
-            Picker("转写引擎", selection: $engine) {
-                Text("本地 · Qwen3-ASR 1.7B").tag(Engine.standard)
-                Text("本地 · Qwen3-ASR 0.6B（轻量）").tag(Engine.light)
-                Text("本地 · FireRedASR2-AED（中文分句定稿）").tag(Engine.fireRed)
-                Text("本地 · Confucius4-R2T2（中英实时字幕）").tag(Engine.r2t2)
-                Text("云端 API · 阿里云百炼").tag(Engine.cloud)
+    private var typography: CaptionTypography { CaptionTypography(fontSize) }
+
+    // A native menu keeps keyboard navigation. Its custom label also follows the chosen point size.
+    private func choice<Value: Hashable, Options: View>(
+        _ title: String, selection: Binding<Value>, value: String, @ViewBuilder options: () -> Options
+    ) -> some View {
+        LabeledContent {
+            Menu {
+                Picker(title, selection: selection, content: options).pickerStyle(.inline)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(value).lineLimit(1).truncationMode(.tail)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: typography.statusSize, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .font(.system(size: typography.bodySize))
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .help(value)
+        } label: {
+            Text(title).fixedSize()
+        }
+    }
+
+    private func pointSizeLabel(_ size: Int) -> String {
+        size == CaptionTypography.defaultSize ? "\(size) 点（默认）" : "\(size) 点"
+    }
+
+    private var transcription: some View {
+        Section {
+            choice("转写引擎", selection: $engine, value: engine.label) {
+                ForEach(Engine.allCases, id: \.self) { Text($0.label).tag($0) }
             }
             if engine == .cloud {
-                Text("麦克风音频会发送到所选地域的百炼实时转写服务，费用按你的账号用量结算。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("服务地域", selection: $region) {
+                Text("音频会发往所选地域的百炼服务，由你的账号按量付费。")
+                    .font(.system(size: typography.deviceSize)).foregroundStyle(.secondary)
+                choice("服务地域", selection: $region, value: region == "singapore" ? "新加坡" : "北京") {
                     Text("北京").tag("beijing")
                     Text("新加坡").tag("singapore")
                 }
-                CloudCredentials(region: region).id(region)
+                CloudCredentials(region: region, typography: typography).id(region)
             } else if let size = engine.downloadSize {
-                Text("首次使用约需下载 \(size)，之后可离线转写。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("首次下载约 \(size)，之后可离线使用。")
+                    .font(.system(size: typography.deviceSize)).foregroundStyle(.secondary)
                 if engine == .fireRed {
-                    Text("适合普通话、方言或中英混说。每句定稿后显示，模型不自动添加标点。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("支持普通话、方言和中英混说。字幕逐句显示，不加标点。")
+                        .font(.system(size: typography.deviceSize)).foregroundStyle(.secondary)
                 } else if engine == .r2t2 {
                     Text("使用此模型即接受[《网易有道模型使用许可协议》](https://github.com/netease-youdao/Confucius4-R2T2/blob/master/MODEL_LICENSE_zh)。")
-                        .font(.caption)
+                        .font(.system(size: typography.deviceSize))
                 }
             }
             if engine != .fireRed {
                 TextField("课题术语", text: $terms, prompt: Text("例如 CRISPR, Cas9, off-target"))
             }
-            TextField("飞书文件夹 token", text: $folder, prompt: Text("留空保存到个人云盘"))
-            Text("转写设置在下次开始或继续记录时生效。").font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(width: 450)
+        } header: {
+            Text("转写")
+        } footer: {
+            Text("下次开始或继续记录时生效。").font(.system(size: typography.deviceSize))
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section("显示") {
+                choice("字体大小", selection: $fontSize, value: pointSizeLabel(fontSize)) {
+                    ForEach(CaptionTypography.sizes, id: \.self) { size in
+                        Text(pointSizeLabel(size)).tag(size)
+                    }
+                }
+            }
+            transcription
+            Section("飞书同步") {
+                TextField("文件夹 token", text: $folder, prompt: Text("留空使用「Purrk」文件夹"))
+            }
+        }
+        .font(.system(size: typography.bodySize))
+        .controlSize(fontSize >= 18 ? .large : .regular)
+        .formStyle(.grouped)
+        .frame(minWidth: 450, idealWidth: 480, minHeight: 360, idealHeight: 430)
     }
 }

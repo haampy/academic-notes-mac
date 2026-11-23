@@ -2,5 +2,4 @@ mlx-qwen3-asr==0.4.4
 mlx-audio==0.6.7
 opencc==1.4.2
 sounddevice==0.5.3
-webrtcvad-wheels==2.0.14.post1
 websockets==15.0.1

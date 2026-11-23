@@ -26,31 +26,25 @@ SOURCES = (
     ("scipy-LICENSE.txt", f"{SCIPY}/LICENSE.txt",
      "221e59f5e910fd7f94e44f0dac77436a11338c285c6346232e4a850a50da0e94"),
 )
-NOTICE = """Purrk for Apple silicon — sources for the bundled GCC runtime libraries
+NOTICE = """Purrk for Apple silicon — GCC runtime sources
 
-The unmodified SciPy 1.17.1 wheel for CPython 3.11, macosx_14_0_arm64,
-supplies three libraries under scipy/.dylibs. Its SHA-256 is
-a3472cfbca0a54177d0faa68f697d8ba4c80bbdc19908c3465556d9f7efce9ee.
-The wheel uses Apple Accelerate and reports GNU Fortran 13.4.0.
+Purrk ships the unmodified SciPy 1.17.1 wheel for CPython 3.11 (macosx_14_0_arm64).
+Wheel SHA-256: a3472cfbca0a54177d0faa68f697d8ba4c80bbdc19908c3465556d9f7efce9ee
 
-libgcc_s.1.1.dylib and libgfortran.5.dylib use GPL-3.0-or-later with the
-GCC Runtime Library Exception 3.1. libquadmath.0.dylib uses LGPL-2.1-or-later.
-The GCC source distribution includes COPYING3, COPYING.RUNTIME and COPYING.LIB.
-The installed wheel also includes its third-party notices in
-scipy-1.17.1.dist-info/LICENSE.txt.
+In scipy/.dylibs, libgcc_s.1.1.dylib and libgfortran.5.dylib use GPL-3.0-or-later
+with the GCC Runtime Library Exception 3.1. libquadmath.0.dylib uses LGPL-2.1-or-later.
+See COPYING3, COPYING.RUNTIME and COPYING.LIB in the GCC archive and
+scipy-1.17.1.dist-info/LICENSE.txt in the wheel.
 
-To inspect or modify the GNU sources with the Homebrew Darwin changes, run
-these commands from the extracted source companion directory:
+To apply Homebrew's macOS patch, run these commands in the extracted directory.
 
     tar -xf gcc-13.4.0.tar.xz
     cd gcc-13.4.0
     patch -p1 < ../gcc-13.4.0.diff
 
-The library source directories are libgcc/, libgfortran/ and libquadmath/.
-The included gcc@13.rb is Homebrew's build recipe for the Apple silicon
-compiler, including the configure options and build/install commands.
-The SciPy wheel workflow shows how its macOS Accelerate builds select
-gfortran-13 and bundle the runtime libraries using delocate.
+Sources are in libgcc/, libgfortran/ and libquadmath/. gcc@13.rb contains the
+compiler build steps. scipy-wheels.yml shows how the Apple Accelerate build
+uses GNU Fortran 13 and bundles its libraries with delocate.
 
 Binary SHA-256 checksums (as distributed in the upstream SciPy wheel):
 6781ce1f79dc10e211ba532b766b0a844265767d3343f029a08112802450a730  libgcc_s.1.1.dylib

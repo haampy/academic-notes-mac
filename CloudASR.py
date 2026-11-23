@@ -12,7 +12,8 @@ import sounddevice as sd
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus, WebSocketException
 
-from Transcribe import emit
+from AudioInput import InputDisconnected, microphone
+from Transcribe import emit, run_worker
 
 
 REGIONS = {
@@ -35,7 +36,7 @@ def endpoint():
     workspace = os.environ.get("ACADEMIC_NOTES_API_WORKSPACE", "").strip()
     if workspace:
         if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", workspace):
-            raise ValueError("百炼 Workspace ID 格式有误，请填写工作空间 ID。")
+            raise ValueError("请检查百炼 Workspace ID 的格式。")
         hostname = f"{workspace}.{location}.maas.aliyuncs.com"
     return f"wss://{hostname}/api-ws/v1/inference"
 
@@ -59,15 +60,15 @@ async def event(socket, task_id):
     message = json.loads(await socket.recv())
     header = message["header"]
     if header["task_id"] != task_id:
-        raise RuntimeError("百炼返回了不属于本场记录的结果。")
+        raise RuntimeError("百炼返回的结果与当前记录不符。")
     if header["event"] == "task-failed":
         code = header.get("error_code", "")
         if code in ("InvalidApiKey", "InvalidAccessToken", "AccessDenied", "Forbidden"):
-            raise RuntimeError("百炼鉴权失败，请核对 API Key、地域和模型权限。")
+            raise RuntimeError("百炼授权失败，请检查 API Key、地域和模型权限。")
         if code in ("Throttling", "Throttling.RateQuota", "QuotaExhausted", "Arrearage"):
             raise RuntimeError("百炼额度或调用频率受限，请检查账户后重试。")
         # Provider messages may contain request details. Surface only an error category.
-        raise RuntimeError("百炼未能完成转写，请检查模型权限、可用额度和网络后重试。")
+        raise RuntimeError("百炼转写失败，请检查模型权限、额度和网络。")
     return header["event"], message.get("payload", {})
 
 
@@ -98,28 +99,27 @@ async def receive_results(socket, task_id):
 async def send_microphone(socket, task_id, stopped, recording):
     loop = asyncio.get_running_loop()
     audio = asyncio.Queue(maxsize=40)
-    capture_error = None
+    overflowed = False
+    disconnected = False
 
     def enqueue(data, overflow):
-        nonlocal capture_error
-        if capture_error:
+        nonlocal overflowed
+        if overflowed:
             return
         if overflow or audio.full():
-            capture_error = "音频输入积压，本次转写已停止，请检查麦克风和网络。"
+            overflowed = True
             stopped.set()
         else:
             audio.put_nowait(data)
 
-    def callback(data, frames, timing, status):
-        loop.call_soon_threadsafe(enqueue, bytes(data), status.input_overflow)
+    def callback(data, status):
+        loop.call_soon_threadsafe(enqueue, data, status.input_overflow)
 
-    with sd.RawInputStream(samplerate=16000, blocksize=1600, channels=1, dtype="int16",
-                           callback=callback) as mic:
+    with microphone(callback, emit, raw=True) as mic:
         recording.set()
-        emit(ready=True)
         while not stopped.is_set():
             if not mic.active:
-                capture_error = "麦克风已断开，请重新开始记录。"
+                disconnected = True
                 stopped.set()
                 break
             try:
@@ -134,7 +134,10 @@ async def send_microphone(socket, task_id, stopped, recording):
         while not audio.empty():
             await socket.send(audio.get_nowait())
         await command(socket, task_id, "finish-task", {"input": {}})
-    return capture_error
+    if overflowed:
+        return RuntimeError("音频积压，转写已停止。请检查麦克风和网络。")
+    if disconnected:
+        return InputDisconnected()
 
 
 async def session(key, stopped, recording):
@@ -145,7 +148,7 @@ async def session(key, stopped, recording):
         await command(socket, task_id, "run-task", start_payload())
         kind, _ = await asyncio.wait_for(event(socket, task_id), 8)
         if kind != "task-started":
-            raise RuntimeError("百炼未确认任务启动，请重新开始。")
+            raise RuntimeError("百炼未确认启动，请重试。")
         sender = asyncio.create_task(send_microphone(socket, task_id, stopped, recording))
         receiver = asyncio.create_task(receive_results(socket, task_id))
         try:
@@ -153,11 +156,11 @@ async def session(key, stopped, recording):
             if receiver in done:
                 await receiver
                 if not sender.done() and not stopped.is_set():
-                    raise RuntimeError("百炼提前结束了转写，请重新开始。")
+                    raise RuntimeError("百炼提前结束转写，请重试。")
             capture_error = await sender
             await asyncio.wait_for(receiver, 10)
             if capture_error:
-                raise RuntimeError(capture_error)
+                raise capture_error
         finally:
             for task in (sender, receiver):
                 task.cancel()
@@ -198,21 +201,17 @@ def run():
     except InvalidStatus as error:
         status = error.response.status_code
         if status in (401, 403):
-            raise RuntimeError("百炼拒绝了连接，请核对 API Key、地域和模型权限。") from None
+            raise RuntimeError("百炼拒绝连接，请检查 API Key、地域和模型权限。") from None
         raise RuntimeError(f"百炼连接失败（HTTP {status}），请检查地域、工作空间和服务状态。") from None
     except TimeoutError:
-        raise RuntimeError("等待百炼响应超时，请检查网络后重试。") from None
+        raise RuntimeError("百炼响应超时，请检查网络。") from None
     except (OSError, WebSocketException):
-        raise RuntimeError("百炼连接中断，请检查网络和服务地域后重试。") from None
+        raise RuntimeError("百炼连接中断，请检查网络和地域设置。") from None
     except (KeyError, TypeError, json.JSONDecodeError):
-        raise RuntimeError("百炼返回了无法读取的转写结果。") from None
+        raise RuntimeError("无法读取百炼的转写结果。") from None
     except sd.PortAudioError:
         raise RuntimeError("无法读取麦克风，请检查设备和录音权限。") from None
 
 
 if __name__ == "__main__":
-    try:
-        run()
-    except Exception as error:
-        emit(error=str(error))
-        sys.exit(1)
+    run_worker(run)

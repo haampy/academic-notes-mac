@@ -14,13 +14,13 @@ def snapshot(repo: str, revision: str, files: tuple[str, ...]) -> Path:
     except LocalEntryNotFoundError:
         pass
 
-    print(json.dumps({"status": "正在下载所选转写模型…"},
+    print(json.dumps({"status": "正在下载模型…"},
                      ensure_ascii=False), flush=True)
     try:
         directory = Path(snapshot_download(**options))
     except (LocalEntryNotFoundError, HfHubHTTPError) as error:
-        raise RuntimeError("模型下载未完成，请检查网络后继续记录。") from error
+        raise RuntimeError("模型下载中断，请联网后重试。") from error
     missing = [name for name in files if not (directory / name).is_file()]
     if missing:
-        raise RuntimeError("请联网补全转写模型文件：" + "、".join(missing))
+        raise RuntimeError("请联网补齐模型文件：" + "、".join(missing))
     return directory

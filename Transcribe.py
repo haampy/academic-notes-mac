@@ -8,19 +8,24 @@ from queue import Empty, SimpleQueue
 
 from opencc import OpenCC
 
+from AudioInput import InputDisconnected, microphone
+
 to_simplified = OpenCC("t2s")
+output_lock = threading.Lock()
 
 MODEL_REVISIONS = {
     "qwen-1.7b": "22c8abe6a6772122dda5905967d7496d1d3e8dd2",
     "qwen-0.6b": "83ce2a8ef9a382d2ba2209aab383bc51fff366f5",
 }
+PAUSE_BLOCKS = 15  # 1.5 seconds at 100 ms per microphone block.
 
 
 def emit(**event):
     for key in ("partial", "final"):
         if key in event:
             event[key] = to_simplified.convert(event[key])
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    with output_lock:
+        print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
 def model_directory(engine):
@@ -51,11 +56,22 @@ def load_transcriber(engine="qwen-1.7b"):
     session = Session(model=str(directory))
     terms = os.environ.get("ACADEMIC_NOTES_TERMS", "")
 
-    def decode(samples):
-        # A Mandarin hint helps retain Chinese phrases inside English academic speech.
-        result = session.transcribe((samples, 16_000), language="Chinese", context=terms,
-                                    max_new_tokens=min(512, 16 + len(samples) // 800))
-        return result.text.strip()
+    def decode(samples, *, preview=False):
+        audio = (samples, 16_000)
+        options = dict(context=terms, max_new_tokens=min(512, 16 + len(samples) // 800))
+        # Automatic detection can return no speech even when a glossary is set.
+        result = session.transcribe(audio, language=None, **options)
+        text = result.text.strip()
+        if preview or not text or result.language != "English":
+            return text
+
+        # A Mandarin hint can recover Chinese phrases omitted inside English speech.
+        hinted = session.transcribe(audio, language="Chinese", **options).text.strip()
+        if any("\u3400" <= ch <= "\u9fff" for ch in hinted) and any(
+            ch.isascii() and ch.isalpha() for ch in hinted
+        ):
+            return hinted
+        return text
 
     return decode
 
@@ -66,11 +82,10 @@ def run():
         import CloudASR
         return CloudASR.run()
     if engine not in (*MODEL_REVISIONS, "firered-aed", "r2t2-8bit"):
-        raise ValueError("未知的转写引擎，请在设置中重新选择。")
+        raise ValueError("转写引擎无效，请在设置中重选。")
 
     import numpy as np
     import sounddevice as sd
-    import webrtcvad
 
     stopped = threading.Event()
     loading = threading.Event()
@@ -100,43 +115,43 @@ def run():
         return
 
     incoming = SimpleQueue()
-    vad = webrtcvad.Vad(2)
     utterance = []
-    pre_roll = deque(maxlen=2)
+    recent_power = deque(maxlen=30)  # Three seconds of local acoustic context.
     quiet_blocks = 0
-    voiced_blocks = 0
-    noise_level = 0.0
     next_preview = 14
     streamed_blocks = 0
+    cut_awaiting_pause = False
 
-    def receive(audio, count, timing, status):
-        incoming.put(audio[:, 0].copy())
+    def receive(block, status):
+        incoming.put(block)
         if stopped.is_set():
             raise sd.CallbackStop
 
-    def finish_utterance():
-        nonlocal quiet_blocks, voiced_blocks, next_preview, streamed_blocks
-        if voiced_blocks >= 2:
-            end = len(utterance) - max(0, quiet_blocks - 2)
+    def finish_utterance(*, continues=False, pause_boundary=False):
+        nonlocal next_preview, streamed_blocks
+        event = {}
+        if utterance:
             if streamer is not None:
-                tail = utterance[streamed_blocks:end]
+                tail = utterance[streamed_blocks:]
                 text = streamer.finish(np.concatenate(tail) if tail else None)
             else:
-                text = decode(np.concatenate(utterance[:end]))
+                text = decode(np.concatenate(utterance))
             if text:
-                emit(final=text)
+                event["final"] = text
+                if continues:
+                    event["continues"] = True
             else:
-                emit(partial="")
+                event["partial"] = ""
+        if pause_boundary:
+            event["pauseBoundary"] = True
+        if event:
+            emit(**event)
         utterance.clear()
-        quiet_blocks = voiced_blocks = 0
         streamed_blocks = 0
         next_preview = 14
+        return "final" in event
 
-    with sd.InputStream(
-        samplerate=16_000, blocksize=1_600, channels=1, dtype="float32",
-        callback=receive, finished_callback=lambda: incoming.put(None),
-    ) as stream:
-        emit(ready=True)
+    with microphone(receive, emit, finished_callback=lambda: incoming.put(None)) as stream:
         while True:
             try:
                 block = incoming.get(timeout=0.25)
@@ -146,47 +161,55 @@ def run():
                 continue
             if block is None:
                 break
-            pcm = (np.clip(block, -1, 1) * 32767).astype("<i2")
-            speech_frames = sum(vad.is_speech(frame.tobytes(), 16_000) for frame in pcm.reshape(-1, 320))
-            level = np.sqrt(np.mean(block * block))
-            if speech_frames < 2:
-                noise_level = 0.85 * noise_level + 0.15 * level
-            quiet = speech_frames < 2 or level < max(0.0005, noise_level * 1.3)
-            if not utterance:
-                if quiet:
-                    pre_roll.append(block)
-                    continue
-                utterance.extend(pre_roll)
-                pre_roll.clear()
-            utterance.append(block)
+            digital_silence = not np.any(block)
+            power = float(np.mean(block * block))
+            recent_power.append(power)
+            # A 10 dB drop suggests a pause. It can end a window but cannot discard audio.
+            quiet = power <= 0.1 * max(recent_power)
             quiet_blocks = quiet_blocks + 1 if quiet else 0
             if not quiet:
-                voiced_blocks += 1
+                cut_awaiting_pause = False
+            if not utterance and digital_silence:
+                if cut_awaiting_pause and quiet_blocks >= PAUSE_BLOCKS:
+                    emit(pauseBoundary=True)
+                    cut_awaiting_pause = False
+                continue
+            utterance.append(block)
 
-            # Each block is 100 ms. Prefer a pause; bound the window for long speech.
-            if quiet_blocks >= 9 or (len(utterance) >= 120 and quiet_blocks >= 3) or len(utterance) >= 240:
-                finish_utterance()
+            if quiet_blocks == PAUSE_BLOCKS:
+                # FireRed usually omits punctuation; use a sustained pause as its endpoint.
+                finish_utterance(pause_boundary=cut_awaiting_pause or engine == "firered-aed")
+                cut_awaiting_pause = False
                 continue
-            if voiced_blocks < 2 or not incoming.empty() or stopped.is_set():
+            # From 20 s, look for a half-second pause before reaching the 24 s model window.
+            if (len(utterance) >= 200 and quiet_blocks >= 5) or len(utterance) >= 240:
+                cut_awaiting_pause = finish_utterance(continues=True)
                 continue
-            if streamer is not None and len(utterance) - streamed_blocks >= 4 and not quiet:
+            if digital_silence or not incoming.empty() or stopped.is_set():
+                continue
+            if streamer is not None and len(utterance) - streamed_blocks >= 4:
                 text = streamer.feed(np.concatenate(utterance[streamed_blocks:]))
                 streamed_blocks = len(utterance)
                 if text:
                     emit(partial=text)
             elif engine in MODEL_REVISIONS and len(utterance) >= next_preview:
-                text = decode(np.concatenate(utterance))
+                text = decode(np.concatenate(utterance), preview=True)
                 if text:
                     emit(partial=text)
                 next_preview = len(utterance) + 20
     finish_utterance()
     if not stopped.is_set():
-        raise RuntimeError("麦克风已断开，请重新开始记录。")
+        raise InputDisconnected()
+
+
+def run_worker(worker):
+    try:
+        worker()
+    except Exception as error:
+        details = {"inputDisconnected": True} if isinstance(error, InputDisconnected) else {}
+        emit(error=str(error), **details)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
-        run()
-    except Exception as error:
-        emit(error=str(error))
-        sys.exit(1)
+    run_worker(run)

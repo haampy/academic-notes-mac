@@ -33,13 +33,13 @@ class R2T2Stream:
         self.prefix = ""
 
     def _decode(self, final):
-        # The VAD bounds the utterance. Each new decode sees its entire audio
+        # Each new decode sees the entire current microphone window
         # and only the text already committed by the R2T2 stable-prefix loop.
         audio = np.concatenate(self.audio)
         if len(audio) <= 200:  # Whisper's STFT needs a half-window of real samples.
             return ""
         if final:
-            # A stop or VAD cut can land on the last syllable. Give the
+            # A stop or window boundary can land on the last syllable. Give the
             # model acoustic right context so it can release words held at |.
             audio = np.pad(audio, (0, 12_800))
         mel, lengths = compute_features(audio)
