@@ -19,7 +19,8 @@ Mac 上的中英学术语音笔记。打开应用、允许麦克风访问后，�
 
 ```sh
 ./build.sh
-open "build/Purrk.app"
 ```
+
+打开构建结束时显示的 `Purrk.app`，默认位于 `build/`。如果已选好安装目录，可用 `git config --local purrk.installDir "/安装目录"` 设置一次，以后构建会直接更新该处的应用。
 
 构建会把 Python 运行时装在用户的 Application Support/AcademicNotes 下。本地转写通过 MLX 运行 8 位量化模型，暂停或结束后释放模型内存。

@@ -7,7 +7,9 @@ if [[ ! -x "$runtime/bin/python" ]]; then
   uv venv --python 3.11 "$runtime"
 fi
 uv pip install --python "$runtime/bin/python" 'mlx-qwen3-asr==0.4.4' 'opencc==1.4.2' 'sounddevice==0.5.3' 'webrtcvad-wheels==2.0.14.post1' 'websockets==15.0.1'
-mkdir -p build
+install_dir=$(git config --local --path --get purrk.installDir 2>/dev/null || true)
+destination="${install_dir:-build}/Purrk.app"
+mkdir -p build "$(dirname "$destination")"
 staging=$(mktemp -d build/.purrk.XXXXXX)
 trap 'rm -rf "$staging"' EXIT
 app="$staging/Purrk.app/Contents"
@@ -19,7 +21,7 @@ codesign --force --sign - "$staging/Purrk.app"
 codesign --verify --strict "$staging/Purrk.app"
 
 # Finder adds a background to legacy app icons on Tahoe. A local custom icon preserves the silhouette.
-swift - "$staging/Purrk.app" "build/Purrk.app" <<'SWIFT'
+swift - "$staging/Purrk.app" "$destination" <<'SWIFT'
 import AppKit
 let bundle = URL(fileURLWithPath: CommandLine.arguments[1])
 let destination = URL(fileURLWithPath: CommandLine.arguments[2])
@@ -34,3 +36,4 @@ if files.fileExists(atPath: destination.path) {
     try files.moveItem(at: bundle, to: destination)
 }
 SWIFT
+printf 'Purrk 已更新至 %s\n' "$destination"
