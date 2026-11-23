@@ -10,7 +10,7 @@ final class Session: ObservableObject {
     @Published var transcript = ""
     @Published var partial = ""
     @Published var status = "准备开始"
-    @Published var syncMessage = ""
+    @Published var syncFailed = false
     @Published var cloudURL: URL?
     @Published var syncing = false
     private var input: FileHandle?
@@ -144,9 +144,9 @@ final class Session: ObservableObject {
         guard !syncing else { syncAgain = true; return }
         syncing = true
         Task {
-            let (url, message) = await Notes.syncPending()
+            let (url, failed) = await Notes.syncPending()
             if let url { cloudURL = url }
-            syncMessage = message
+            syncFailed = failed
             syncing = false
             if syncAgain { syncAgain = false; sync() }
         }
@@ -162,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct Captions: View {
     @ObservedObject var session: Session
+    @Environment(\.openURL) private var openURL
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -196,12 +197,15 @@ struct Captions: View {
                     Button("结束") { session.stop() }.disabled(session.phase == .stopping)
                 }
                 Spacer()
-                if let url = session.cloudURL { Link("最近同步的笔记", destination: url) }
-                Button("同步") { session.sync() }.disabled(session.syncing)
+                Button("打开最近的飞书笔记") {
+                    if let url = session.cloudURL { openURL(url) }
+                }.disabled(session.cloudURL == nil)
+                if session.syncFailed {
+                    Button("重试同步") { session.sync() }
+                        .disabled(session.syncing)
+                        .help("同步失败。请检查网络、飞书授权和文件夹权限后重试。")
+                }
                 SettingsLink { Image(systemName: "gearshape") }.help("术语和飞书文件夹")
-            }
-            if !session.syncMessage.isEmpty {
-                Text(session.syncMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
         }
         .padding(16).frame(minWidth: 450, minHeight: 225)

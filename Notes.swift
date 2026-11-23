@@ -34,7 +34,7 @@ enum Notes {
         }
     }
 
-    static func syncPending(excluding current: URL? = nil) async -> (url: URL?, message: String) {
+    static func syncPending(excluding current: URL? = nil) async -> (url: URL?, failed: Bool) {
         await uploader.sync(excluding: current)
     }
 
@@ -44,11 +44,11 @@ enum Notes {
     }
 
     private actor Feishu {
-        func sync(excluding excluded: URL?) -> (URL?, String) {
+        func sync(excluding excluded: URL?) -> (URL?, Bool) {
             var last: URL?
             do {
                 let fm = FileManager.default
-                guard fm.fileExists(atPath: directory.path) else { return (nil, "") }
+                guard fm.fileExists(atPath: directory.path) else { return (nil, false) }
                 let files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
                 for note in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where note.pathExtension == "txt" {
                     if note == excluded || recording.withLock({ $0 == note }) { continue }
@@ -78,9 +78,9 @@ enum Notes {
                     try JSONEncoder().encode(receipt).write(to: marker, options: .atomic)
                     last = receipt.link
                 }
-                return (last, last == nil ? "" : "已同步到飞书")
+                return (last, false)
             } catch {
-                return (last, "笔记待同步。请检查网络、飞书授权和文件夹权限。")
+                return (last, true)
             }
         }
 
