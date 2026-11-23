@@ -9,12 +9,16 @@ final class Session: ObservableObject {
     @Published var phase = Phase.idle
     @Published var transcript = ""
     @Published var partial = ""
+    @Published var title = ""
+    @Published var titleError = ""
     @Published var status = "准备开始"
     @Published var syncFailed = false
     @Published var cloudURL: URL?
     @Published var syncing = false
     private var input: FileHandle?
     private var note: URL?
+    private var savedTitle = ""
+    var canRename: Bool { note != nil && phase != .stopping }
     private var started = Date()
     private var pauseRequested = false
     private var quitting = false
@@ -49,7 +53,11 @@ final class Session: ObservableObject {
             }
             do {
                 if note == nil {
-                    note = try Notes.start()
+                    let file = try Notes.start()
+                    note = file
+                    savedTitle = try Notes.title(for: file)
+                    title = savedTitle
+                    titleError = ""
                     started = Date()
                     transcript = ""
                     partial = ""
@@ -68,6 +76,22 @@ final class Session: ObservableObject {
         }
         process.arguments = [script.path]
         var env = ProcessInfo.processInfo.environment
+        let engine = Engine.selected
+        env["ACADEMIC_NOTES_ENGINE"] = engine.rawValue
+        env.removeValue(forKey: "ACADEMIC_NOTES_API_KEY")
+        if engine == .cloud {
+            let defaults = UserDefaults.standard
+            let region = defaults.string(forKey: "aliyunRegion") ?? "beijing"
+            let key = try APIKeyStore.read(region)
+            guard !key.isEmpty else {
+                throw NSError(domain: "AcademicNotes", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "请在设置中保存当前地域的百炼 API Key，再继续记录。"
+                ])
+            }
+            env["ACADEMIC_NOTES_API_KEY"] = key
+            env["ACADEMIC_NOTES_API_REGION"] = region
+            env["ACADEMIC_NOTES_API_WORKSPACE"] = defaults.string(forKey: "aliyunWorkspace." + region)
+        }
         env["ACADEMIC_NOTES_TERMS"] = UserDefaults.standard.string(forKey: "terms")
         env["PYTHONUTF8"] = "1"
         process.environment = env
@@ -81,7 +105,10 @@ final class Session: ObservableObject {
             do {
                 for try await line in events.fileHandleForReading.bytes.lines {
                     guard let event = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
-                    if event["ready"] != nil, phase == .starting { phase = .live; status = "正在记录" }
+                    if event["ready"] != nil, phase == .starting {
+                        phase = .live
+                        status = engine == .cloud ? "正在记录 · 云端" : "正在记录"
+                    }
                     if let text = event["partial"] as? String { partial = text }
                     if let text = event["final"] as? String { save(text); partial = "" }
                     if let text = event["error"] as? String { failure = text }
@@ -104,8 +131,22 @@ final class Session: ObservableObject {
 
     func mark() { if phase == .live { save("★ 重点") } }
 
+    func commitTitle() {
+        guard let note, title != savedTitle else { return }
+        do {
+            let file = try Notes.rename(title, for: note)
+            self.note = file
+            savedTitle = try Notes.title(for: file)
+            title = savedTitle
+            titleError = ""
+        } catch {
+            titleError = "标题保存失败：" + error.localizedDescription
+        }
+    }
+
     func stop(pause: Bool = false) {
         guard phase != .idle && phase != .stopping else { return }
+        commitTitle()
         pauseRequested = pause
         phase = .stopping
         status = "正在保存最后一句…"
@@ -116,9 +157,11 @@ final class Session: ObservableObject {
     private func ended(error: String?) {
         input = nil
         partial = ""
-        if pauseRequested && error == nil && !quitting {
+        commitTitle()
+        let interrupted = error != nil && phase != .stopping
+        if note != nil && (pauseRequested || interrupted) && !quitting {
             phase = .paused
-            status = "已暂停"
+            status = error ?? "已暂停"
         } else {
             if let note { Notes.finish(note) }
             note = nil
@@ -131,6 +174,7 @@ final class Session: ObservableObject {
     }
 
     func terminate() -> NSApplication.TerminateReply {
+        commitTitle()
         guard input != nil else {
             if let note { Notes.finish(note) }
             return .terminateNow
@@ -163,14 +207,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct Captions: View {
     @ObservedObject var session: Session
     @Environment(\.openURL) private var openURL
+    @FocusState private var editingTitle: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Circle().fill(session.phase == .live ? Color.red : .secondary).frame(width: 8, height: 8)
-                Text(session.status).font(.subheadline)
-                Spacer()
+                TextField("笔记标题", text: $session.title)
+                    .accessibilityLabel("笔记标题")
+                    .help("修改当前笔记标题，按回车保存")
+                    .focused($editingTitle)
+                    .disabled(!session.canRename)
+                    .onSubmit { session.commitTitle(); editingTitle = false }
+                    .onChange(of: editingTitle) { _, focused in
+                        if !focused { session.commitTitle() }
+                    }
                 Button("本地笔记") { NSWorkspace.shared.open(Notes.directory) }
             }
+            HStack {
+                Circle().fill(session.phase == .live ? Color.red : .secondary).frame(width: 8, height: 8)
+                Text(session.status).font(.subheadline).textSelection(.enabled)
+            }
+            if !session.titleError.isEmpty { Text(session.titleError).font(.caption).foregroundStyle(.red) }
             Divider()
             ScrollViewReader { scroll in
                 ScrollView {
@@ -205,7 +261,7 @@ struct Captions: View {
                         .disabled(session.syncing)
                         .help("同步失败。请检查网络、飞书授权和文件夹权限后重试。")
                 }
-                SettingsLink { Image(systemName: "gearshape") }.help("术语和飞书文件夹")
+                SettingsLink { Image(systemName: "gearshape") }.help("转写引擎、术语和飞书设置")
             }
         }
         .padding(16).frame(minWidth: 450, minHeight: 225)
@@ -218,8 +274,6 @@ struct Captions: View {
 struct AcademicNotes: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var session = Session.shared
-    @AppStorage("terms") private var terms = ""
-    @AppStorage("feishuFolderToken") private var folder = ""
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
@@ -231,12 +285,6 @@ struct AcademicNotes: App {
             if session.phase != .idle { Button("结束记录") { session.stop() } }
             Button("退出") { NSApp.terminate(nil) }
         }
-        Settings {
-            Form {
-                TextField("课题术语", text: $terms, prompt: Text("例如 CRISPR, Cas9, off-target"))
-                TextField("飞书文件夹 token", text: $folder, prompt: Text("留空保存到个人云盘"))
-                Text("术语在下次开始或继续记录时生效。").font(.caption).foregroundStyle(.secondary)
-            }.padding(20).frame(width: 420)
-        }
+        Settings { Preferences() }.windowLevel(.floating)
     }
 }

@@ -10,6 +10,11 @@ from opencc import OpenCC
 
 to_simplified = OpenCC("t2s")
 
+MODEL_REVISIONS = {
+    "qwen-1.7b": "22c8abe6a6772122dda5905967d7496d1d3e8dd2",
+    "qwen-0.6b": "83ce2a8ef9a382d2ba2209aab383bc51fff366f5",
+}
+
 
 def emit(**event):
     for key in ("partial", "final"):
@@ -18,18 +23,30 @@ def emit(**event):
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
-def load_transcriber():
-    import mlx.core as mx
-    from huggingface_hub import snapshot_download
-    from mlx_qwen3_asr import Session
+def model_directory(engine):
+    from huggingface_hub import snapshot_download, try_to_load_from_cache
 
-    directory = Path.home() / "Library/Application Support/AcademicNotes/models/qwen3-asr-1.7b-8bit"
+    name = f"qwen3-asr-{engine.removeprefix('qwen-')}-8bit"
+    repo = f"moona3k/mlx-{name}"
+    revision = MODEL_REVISIONS[engine]
+    directory = Path.home() / "Library/Application Support/AcademicNotes/models" / name
     files = ("config.json", "quantization_config.json", "weights.safetensors",
              "tokenizer_config.json", "vocab.json", "merges.txt")
-    if not all((directory / name).is_file() for name in files):
-        snapshot_download("moona3k/mlx-qwen3-asr-1.7b-8bit", local_dir=directory,
-                          revision="22c8abe6a6772122dda5905967d7496d1d3e8dd2", allow_patterns=list(files))
+    cached = try_to_load_from_cache(repo, "weights.safetensors", revision=revision)
+    candidates = [directory]
+    if isinstance(cached, str):
+        candidates.append(Path(cached).parent)
+    for candidate in candidates:
+        if all((candidate / filename).is_file() for filename in files):
+            return candidate
+    return Path(snapshot_download(repo, local_dir=directory, revision=revision, allow_patterns=list(files)))
 
+
+def load_transcriber(engine="qwen-1.7b"):
+    import mlx.core as mx
+    from mlx_qwen3_asr import Session
+
+    directory = model_directory(engine)
     mx.set_cache_limit(256 * 1024**2)
     session = Session(model=str(directory))
     terms = os.environ.get("ACADEMIC_NOTES_TERMS", "")
@@ -44,20 +61,33 @@ def load_transcriber():
 
 
 def run():
+    engine = os.environ.get("ACADEMIC_NOTES_ENGINE") or "qwen-1.7b"
+    if engine == "aliyun-api":
+        import CloudASR
+        return CloudASR.run()
+    if engine not in MODEL_REVISIONS:
+        raise ValueError("未知的转写引擎，请在设置中重新选择。")
+
     import numpy as np
     import sounddevice as sd
     import webrtcvad
 
     stopped = threading.Event()
+    loading = threading.Event()
+    loading.set()
 
     def wait_for_stop():
         while chunk := os.read(sys.stdin.fileno(), 512):
             if b"\n" in chunk:
                 break
         stopped.set()
+        if loading.is_set():
+            # No audio exists yet. Exiting the worker also cancels any download threads.
+            os._exit(0)
 
     threading.Thread(target=wait_for_stop, daemon=True).start()
-    decode = load_transcriber()
+    decode = load_transcriber(engine)
+    loading.clear()
     if stopped.is_set():
         return
 
